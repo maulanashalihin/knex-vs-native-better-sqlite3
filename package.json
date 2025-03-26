@@ -1,0 +1,23 @@
+{
+  "name": "benchmarkdb",
+  "version": "1.0.0",
+  "description": "Benchmark comparison between native better-sqlite3 and Knex.js",
+  "main": "benchmark.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "benchmark": "node benchmark.js"
+  },
+  "keywords": [
+    "benchmark",
+    "sqlite",
+    "better-sqlite3",
+    "knex"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "better-sqlite3": "^8.5.0",
+    "knex": "^2.5.1",
+    "benchmark": "^2.1.4"
+  }
+}
