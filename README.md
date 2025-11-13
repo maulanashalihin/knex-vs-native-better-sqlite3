@@ -1,121 +1,111 @@
-# SQLite Benchmark: better-sqlite3 vs Knex.js
+# SQLite Performance Benchmarks: better-sqlite3, Knex.js, libSQL (Turso)
 
-This project benchmarks the performance difference between using native better-sqlite3 and using it through the Knex.js query builder.
+This repository compares SQLite performance across three approaches:
+- Native `better-sqlite3`
+- `Knex.js` (using the `better-sqlite3` driver)
+- `libSQL (Turso) embedded` via `@libsql/client`
 
-## Setup
+It also includes stress tests for concurrent writes and updates, and WAL-mode variants for increased write concurrency.
+
+## Features
+
+- Comprehensive micro-benchmarks: insert, select, update, delete, and complex queries
+- Adapters: native, Knex, libSQL (embedded)
+- WAL-mode comparison: native-WAL and Knex-WAL
+- Concurrent stress tests: multi-writer insert and update
+- Self-contained setup with ephemeral `.db` files created and cleaned on run
+
+## Project Structure
+
+- `sqlite-benchmark.js` — Main benchmark runner for native, Knex, and libSQL
+- `sqlite-wal-benchmark.js` — Focused WAL comparison for native better-sqlite3
+- `append-file-benchmark.js` — File I/O benchmark (not DB-related)
+- `supabase-benchmark.js` — PostgreSQL benchmark against Supabase (optional)
+- `package.json` — Scripts and dependencies
+
+## Prerequisites
+
+- Node.js 16+ recommended
+- macOS or Linux (tested on macOS)
+- No external services required for embedded mode; `.db` files are created in the project root
+
+## Installation
 
 ```bash
 npm install
 ```
 
-## Running the Benchmark
+## Running
 
 ```bash
 npm run benchmark
 ```
 
-## Benchmark Details
+This runs `sqlite-benchmark.js`, which:
+- Creates `native.db`, `knex.db`, `libsql.db`, `native-wal.db`, `knex-wal.db`
+- Builds identical schemas across all engines
+- Seeds the databases
+- Executes all micro-benchmark suites
+- Runs concurrent write and update stress tests at the end
 
-The benchmark compares the following operations:
-- Insert operations
-- Select operations
-- Update operations
-- Delete operations
-- Complex queries
+## Benchmark Suites
 
-Each operation is performed multiple times to get accurate performance measurements.
+- Insert: single-row, batch (transaction for native, bulk for Knex/libSQL)
+- Select: all, by id, by condition
+- Update: single-row updates
+- Delete: single-row deletes
+- Complex: aggregate query with COUNT/AVG/MIN/MAX
 
-## Results
+Implementation references:
+- libSQL client init: `sqlite-benchmark.js:27`
+- libSQL schema creation: `sqlite-benchmark.js:61`–`69`
+- libSQL seeding with batch: `sqlite-benchmark.js:441`–`445`
+- libSQL suite entries: `sqlite-benchmark.js:121`–`133`, `202`–`213`, `234`–`246`, `265`–`276`, `319`–`332`, `349`–`361`, `403`–`417`
+- WAL setup (native): `sqlite-benchmark.js:32`–`34`
+- WAL setup (Knex PRAGMA): `sqlite-benchmark.js:70`
 
-### Insert Operations:
-```
-Native better-sqlite3 - Single Insert: 5,648 ops/sec ±2.94% (89 runs sampled)
-Knex.js - Single Insert: 5,296 ops/sec ±2.99% (82 runs sampled)
-Native better-sqlite3 - Batch Insert (Transaction): 5,190 ops/sec ±4.31% (85 runs sampled)
-Knex.js - Batch Insert: 5,012 ops/sec ±4.01% (80 runs sampled)
-```
+## Concurrent Stress Tests
 
-### Select Operations:
-```
-Native better-sqlite3 - Select All: 66,962 ops/sec ±0.83% (96 runs sampled)
-Knex.js - Select All: 39,541 ops/sec ±0.26% (83 runs sampled)
-Native better-sqlite3 - Select By Id: 289,709 ops/sec ±0.82% (99 runs sampled)
-Knex.js - Select By Id: 70,172 ops/sec ±2.48% (91 runs sampled)
-Native better-sqlite3 - Select By Condition: 65,512 ops/sec ±0.13% (96 runs sampled)
-Knex.js - Select By Condition: 37,683 ops/sec ±0.27% (89 runs sampled)
-```
+- Dedicated table `cw_users` created for all engines: `sqlite-benchmark.js:107`–`157`
+- Concurrent write: 8 writers × 200 inserts each: `sqlite-benchmark.js:159`–`215`
+- Concurrent update: 8 writers × 200 updates each with pre-seeded rows: `sqlite-benchmark.js:254`–`314`
+- Tests are invoked automatically after micro-benchmarks: `sqlite-benchmark.js:729`–`736`
 
-### Update Operations:
-```
-Native better-sqlite3 - Update Single Record: 5,804 ops/sec ±4.99% (86 runs sampled)
-Knex.js - Update Single Record: 6,017 ops/sec ±3.51% (80 runs sampled)
-```
+### Sample Results (Throughput)
 
-### Delete Operations:
+Concurrent Write:
 ```
-Native better-sqlite3 - Delete Single Record: 222,482 ops/sec ±3.47% (100 runs sampled)
-Knex.js - Delete Single Record: 91,537 ops/sec ±0.22% (89 runs sampled)
+native:     total 1600, errors 0, ~4,103 ops/sec
+native-wal: total 1600, errors 0, ~50,000 ops/sec
+knex:       total 1600, errors 0, ~4,156 ops/sec
+knex-wal:   total 1600, errors 0, ~38,095 ops/sec
+libsql:     total 1600, errors 0, ~4,156 ops/sec
 ```
 
-### Complex Operations:
+Concurrent Update:
 ```
-Native better-sqlite3 - Complex Query: 171 ops/sec ±0.27% (89 runs sampled)
-Knex.js - Complex Query: 187 ops/sec ±0.25% (89 runs sampled)
+native:     total 1600, errors 0, ~133,333 ops/sec
+native-wal: total 1600, errors 0, ~266,667 ops/sec
+knex:       total 1600, errors 0, ~66,667 ops/sec
+knex-wal:   total 1600, errors 0, ~94,118 ops/sec
+libsql:     total 1600, errors 0, ~72,727 ops/sec
 ```
 
-## Analisis Hasil Benchmark
+## Notes & Disclaimers
 
-### 1. Insert Operations
-- Native better-sqlite3: 5,648 ops/sec
-- Knex.js: 5,296 ops/sec
-- **Kesimpulan**: Keduanya memiliki performa yang hampir sama, dengan native sedikit lebih cepat (~7% lebih cepat).
+- WAL mode improves write/read concurrency significantly for native and Knex.
+- Throughput varies by hardware, OS, Node version, and load. Treat the numbers as indicative, not authoritative.
+- The sample results were produced on a Mac M4 (Apple silicon). Your local machine or VPS will likely produce different numbers.
+- This project can be used to benchmark machine/VPS performance under comparable workloads.
 
-### 2. Select Operations
-- **Select All**:
-  - Native better-sqlite3: 66,962 ops/sec
-  - Knex.js: 39,541 ops/sec
-  - Native ~1.7x lebih cepat
+## Turso / libSQL (Optional)
 
-- **Select By Id**:
-  - Native better-sqlite3: 289,709 ops/sec
-  - Knex.js: 70,172 ops/sec
-  - Native ~4.1x lebih cepat
+- Embedded mode (`file:...`) needs no CLI or remote database.
+- To test embedded replicas that sync from a remote Turso database, you can optionally:
+  - Install Turso CLI: `curl -sSL tur.so/install | sh`
+  - Configure `@libsql/client` with `syncUrl` and `authToken`
+  - See Turso docs for `@libsql/client` options
 
-- **Select By Condition**:
-  - Native better-sqlite3: 65,512 ops/sec
-  - Knex.js: 37,683 ops/sec
-  - Native ~1.7x lebih cepat
+## License
 
-- **Kesimpulan**: Native better-sqlite3 secara konsisten lebih cepat untuk operasi select, dengan peningkatan performa yang signifikan terutama untuk query dengan kondisi sederhana (select by id).
-
-### 3. Update Operations
-- Native better-sqlite3: 5,804 ops/sec
-- Knex.js: 6,017 ops/sec
-- **Kesimpulan**: Knex.js sedikit lebih cepat untuk update (~3.7% lebih cepat), tetapi perbedaannya kecil dan mungkin tidak signifikan secara statistik.
-
-### 4. Delete Operations
-- Native better-sqlite3: 222,482 ops/sec
-- Knex.js: 91,537 ops/sec
-- **Kesimpulan**: Native ~2.4x lebih cepat untuk operasi delete.
-
-### 5. Complex Operations
-- Native better-sqlite3: 171 ops/sec
-- Knex.js: 187 ops/sec
-- **Kesimpulan**: Knex.js sedikit lebih cepat (~9.4% lebih cepat) untuk query kompleks yang melibatkan agregasi.
-
-## Kesimpulan Umum
-
-1. **Native better-sqlite3** umumnya lebih cepat untuk operasi read (select) dan delete, dengan peningkatan performa yang signifikan (1.7x hingga 4.1x lebih cepat).
-
-2. **Knex.js** memiliki performa yang sebanding atau sedikit lebih baik untuk operasi write (insert, update) dan query kompleks.
-
-3. **Trade-off**:
-   - **Native better-sqlite3**: Performa lebih baik, terutama untuk operasi read, tetapi kurang fleksibel dan hanya untuk SQLite.
-   - **Knex.js**: Performa sedikit lebih rendah untuk sebagian besar operasi, tetapi lebih fleksibel, portable, dan menawarkan abstraksi yang lebih tinggi.
-
-4. **Rekomendasi**:
-   - Jika kecepatan adalah prioritas utama dan Anda hanya menggunakan SQLite, native better-sqlite3 adalah pilihan yang baik.
-   - Jika Anda membutuhkan fleksibilitas, portabilitas database, dan kemudahan pengembangan, Knex.js adalah pilihan yang solid dengan performa yang masih baik.
-   - Untuk aplikasi dengan beban kerja read-heavy, pertimbangkan untuk menggunakan native better-sqlite3.
-   - Untuk aplikasi dengan beban kerja write-heavy atau query kompleks, perbedaan performa antara keduanya tidak signifikan.
-
+ISC License (see `package.json`)
