@@ -5,7 +5,8 @@
   "main": "benchmark.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "benchmark": "node sqlite-benchmark.js"
+    "benchmark": "node sqlite-benchmark.js",
+    "benchmark:turso": "node turso-benchmark.js"
   },
   "keywords": [
     "benchmark",
