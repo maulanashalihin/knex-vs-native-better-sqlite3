@@ -62,82 +62,84 @@ This runs `sqlite-benchmark.js`, which:
 - **Concurrent Write**: 8 writers × 200 inserts each (1600 total)
 - **Concurrent Update**: 8 writers × 200 updates each with pre-seeded rows
 
-## Sample Results (Mac M4)
+## Sample Results (Mac Mini M4 - NVMe Native)
+
+> **Note:** Results obtained from Mac Mini M4 with NVMe native storage. These numbers represent standardized baseline performance on Apple Silicon.
 
 ### Insert Operations
 ```
-Native better-sqlite3 (DELETE) - Single Insert:          2,100 ops/sec
-Native better-sqlite3 (WAL) - Single Insert:            53,588 ops/sec
-Knex.js (WAL) - Single Insert:                          38,167 ops/sec
-Kysely (WAL) - Single Insert:                           39,045 ops/sec
-Kysely Generic (WAL) - Single Insert:                   20,339 ops/sec
-Native better-sqlite3 (DELETE) - Batch (5 records):        833 ops/sec
-Native better-sqlite3 (WAL) - Batch (5 records):         21,142 ops/sec
-Knex.js (WAL) - Batch Insert:                            1,000 ops/sec
-Kysely (WAL) - Batch (5 records):                       23,090 ops/sec
-Kysely Generic (WAL) - Batch (5 records):               23,078 ops/sec
+Native better-sqlite3 (DELETE) - Single Insert:          4,496 ops/sec
+Native better-sqlite3 (WAL) - Single Insert:            99,437 ops/sec
+Knex.js (WAL) - Single Insert:                          54,766 ops/sec
+Kysely (WAL) - Single Insert:                           95,002 ops/sec
+Kysely Generic (WAL) - Single Insert:                   99,955 ops/sec
+Native better-sqlite3 (DELETE) - Batch (5 records):      3,507 ops/sec
+Native better-sqlite3 (WAL) - Batch (5 records):        30,655 ops/sec
+Knex.js (WAL) - Batch Insert:                           25,324 ops/sec
+Kysely (WAL) - Batch (5 records):                       32,709 ops/sec
+Kysely Generic (WAL) - Batch (5 records):               40,770 ops/sec
 ```
 
 ### Select Operations
 ```
-Native better-sqlite3 (DELETE) - Select All:            151,533 ops/sec
-Native better-sqlite3 (WAL) - Select All:               210,681 ops/sec
-Knex.js (WAL) - Select All:                              59,340 ops/sec
-Kysely (WAL) - Select All:                               210,449 ops/sec
-Kysely Generic (WAL) - Select All:                       210,205 ops/sec
-Native better-sqlite3 (DELETE) - Select By Id:           342,356 ops/sec
-Native better-sqlite3 (WAL) - Select By Id:              935,990 ops/sec
-Knex.js (WAL) - Select By Id:                             75,861 ops/sec
-Kysely (WAL) - Select By Id:                              937,546 ops/sec
-Kysely Generic (WAL) - Select By Id:                     940,664 ops/sec
-Native better-sqlite3 (DELETE) - Select By Condition:    144,960 ops/sec
-Native better-sqlite3 (WAL) - Select By Condition:       200,906 ops/sec
-Knex.js (WAL) - Select By Condition:                      55,767 ops/sec
-Kysely (WAL) - Select By Condition:                      199,986 ops/sec
-Kysely Generic (WAL) - Select By Condition:              200,061 ops/sec
+Native better-sqlite3 (DELETE) - Select All:            149,035 ops/sec
+Native better-sqlite3 (WAL) - Select All:               209,352 ops/sec
+Knex.js (WAL) - Select All:                              69,175 ops/sec
+Kysely (WAL) - Select All:                               206,178 ops/sec
+Kysely Generic (WAL) - Select All:                       206,112 ops/sec
+Native better-sqlite3 (DELETE) - Select By Id:           337,456 ops/sec
+Native better-sqlite3 (WAL) - Select By Id:              912,229 ops/sec
+Knex.js (WAL) - Select By Id:                             90,727 ops/sec
+Kysely (WAL) - Select By Id:                              919,351 ops/sec
+Kysely Generic (WAL) - Select By Id:                     910,096 ops/sec
+Native better-sqlite3 (DELETE) - Select By Condition:    143,381 ops/sec
+Native better-sqlite3 (WAL) - Select By Condition:       199,456 ops/sec
+Knex.js (WAL) - Select By Condition:                      63,247 ops/sec
+Kysely (WAL) - Select By Condition:                      198,083 ops/sec
+Kysely Generic (WAL) - Select By Condition:              198,655 ops/sec
 ```
 
 ### Update Operations
 ```
-Native better-sqlite3 (DELETE) - Update Single:          2,608 ops/sec
-Native better-sqlite3 (WAL) - Update Single:            87,961 ops/sec
-Knex.js (WAL) - Update Single:                           1,140 ops/sec
-Kysely (WAL) - Update Single:                            4,884 ops/sec
-Kysely Generic (WAL) - Update Single:                   26,150 ops/sec
+Native better-sqlite3 (DELETE) - Update Single:          5,312 ops/sec
+Native better-sqlite3 (WAL) - Update Single:            173,320 ops/sec
+Knex.js (WAL) - Update Single:                           75,971 ops/sec
+Kysely (WAL) - Update Single:                           174,864 ops/sec
+Kysely Generic (WAL) - Update Single:                   177,373 ops/sec
 ```
 
 ### Delete Operations
 ```
-Native better-sqlite3 (DELETE) - Delete Single:         103,638 ops/sec
-Native better-sqlite3 (WAL) - Delete Single:            706,074 ops/sec
-Knex.js (WAL) - Delete Single:                          104,674 ops/sec
-Kysely (WAL) - Delete Single:                           706,026 ops/sec
-Kysely Generic (WAL) - Delete Single:                   709,837 ops/sec
+Native better-sqlite3 (DELETE) - Delete Single:         243,339 ops/sec
+Native better-sqlite3 (WAL) - Delete Single:            705,729 ops/sec
+Knex.js (WAL) - Delete Single:                          153,451 ops/sec
+Kysely (WAL) - Delete Single:                           703,395 ops/sec
+Kysely Generic (WAL) - Delete Single:                   712,465 ops/sec
 ```
 
 ### Complex Operations
 ```
-Native better-sqlite3 (DELETE) - Complex Query:          837 ops/sec
-Native better-sqlite3 (WAL) - Complex Query:              23 ops/sec
-Knex.js (WAL) - Complex Query:                           908 ops/sec
-Kysely (WAL) - Complex Query:                             24 ops/sec
-Kysely Generic (WAL) - Complex Query:                     28 ops/sec
+Native better-sqlite3 (DELETE) - Complex Query:          236 ops/sec
+Native better-sqlite3 (WAL) - Complex Query:              14 ops/sec
+Knex.js (WAL) - Complex Query:                            22 ops/sec
+Kysely (WAL) - Complex Query:                             15 ops/sec
+Kysely Generic (WAL) - Complex Query:                     13 ops/sec
 ```
 
 ### Concurrent Write Stress Test
 ```
-native (DELETE):       total 1600, errors 0, ~2,097 ops/sec
-native-wal:            total 1600, errors 0, ~43,243 ops/sec
-knex-wal:              total 1600, errors 0, ~2,033 ops/sec
-kysely-wal:            total 1600, errors 0, ~34,043 ops/sec
-kysely-generic-wal:    total 1600, errors 0, ~36,364 ops/sec
+native (DELETE):       total 1600, errors 0, ~5,063 ops/sec
+native-wal:            total 1600, errors 0, ~64,000 ops/sec
+knex-wal:              total 1600, errors 0, ~40,000 ops/sec
+kysely-wal:            total 1600, errors 0, ~45,714 ops/sec
+kysely-generic-wal:    total 1600, errors 0, ~48,485 ops/sec
 ```
 
 ### Concurrent Update Stress Test
 ```
 native (DELETE):       total 1600, errors 0, ~160,000 ops/sec
 native-wal:            total 1600, errors 0, ~320,000 ops/sec
-knex-wal:              total 1600, errors 0, ~72,727 ops/sec
+knex-wal:              total 1600, errors 0, ~94,118 ops/sec
 kysely-wal:            total 1600, errors 0, ~123,077 ops/sec
 kysely-generic-wal:    total 1600, errors 0, ~145,455 ops/sec
 ```
@@ -148,13 +150,13 @@ kysely-generic-wal:    total 1600, errors 0, ~145,455 ops/sec
 
 | Category | Winner | Performance | Notes |
 |----------|--------|-------------|-------|
-| **Single Insert** | Native WAL | ~53,588 ops/sec | 25x faster than DELETE mode |
-| **Batch Insert** | Native WAL | ~21,142 ops/sec | Kysely matches closely |
-| **Select All** | Native WAL / Kysely | ~210,000 ops/sec | Kysely matches native exactly |
-| **Select By ID** | Native WAL | ~936,000 ops/sec | Kysely within 0.2% |
-| **Update** | Native WAL | ~87,961 ops/sec | Best write performance |
-| **Delete** | Native WAL | ~706,000 ops/sec | Kysely matches native |
-| **Concurrent Write** | Native WAL | ~43,243 ops/sec | 20x faster than DELETE |
+| **Single Insert** | Kysely Generic WAL | ~99,955 ops/sec | 22x faster than DELETE mode |
+| **Batch Insert** | Kysely Generic WAL | ~40,770 ops/sec | Best batch performance |
+| **Select All** | Native WAL | ~209,352 ops/sec | Kysely within 1.5% |
+| **Select By ID** | Native WAL | ~912,229 ops/sec | Kysely within 0.8% |
+| **Update** | Kysely Generic WAL | ~177,373 ops/sec | 33x faster than DELETE mode |
+| **Delete** | Kysely Generic WAL | ~712,465 ops/sec | Near-native performance |
+| **Concurrent Write** | Native WAL | ~64,000 ops/sec | 13x faster than DELETE |
 | **Concurrent Update** | Native WAL | ~320,000 ops/sec | Best for concurrent writes |
 
 ### Library Comparison
@@ -162,20 +164,20 @@ kysely-generic-wal:    total 1600, errors 0, ~145,455 ops/sec
 | Library | Type Safety | Overhead vs Native | Best For |
 |---------|-------------|-------------------|----------|
 | **Native better-sqlite3 (WAL)** | None | 0% (baseline) | Maximum performance |
-| **Kysely** | Full TypeScript | ~0-30% | Type-safe apps, minimal overhead |
-| **Knex.js (WAL)** | None (JS only) | ~20-40% | Legacy JS projects, mature ORM |
-| **Kysely Generic** | Full TypeScript | ~40-60% | Alternative Kysely setup |
+| **Kysely** | Full TypeScript | ~0-5% | Type-safe apps, minimal overhead |
+| **Knex.js (WAL)** | None (JS only) | ~30-50% | Legacy JS projects, mature ORM |
+| **Kysely Generic** | Full TypeScript | ~0-5% | Alternative Kysely setup, best inserts |
 
 ### WAL vs DELETE Mode
 
 | Operation | DELETE Mode | WAL Mode | Improvement |
 |-----------|-------------|----------|-------------|
-| Single Insert | ~2,100 ops/sec | ~53,588 ops/sec | **25x faster** |
-| Batch Insert | ~833 ops/sec | ~21,142 ops/sec | **25x faster** |
-| Select By ID | ~342,356 ops/sec | ~935,990 ops/sec | **2.7x faster** |
-| Update | ~2,608 ops/sec | ~87,961 ops/sec | **34x faster** |
-| Delete | ~103,638 ops/sec | ~706,074 ops/sec | **6.8x faster** |
-| Concurrent Write | ~2,097 ops/sec | ~43,243 ops/sec | **21x faster** |
+| Single Insert | ~4,496 ops/sec | ~99,437 ops/sec | **22x faster** |
+| Batch Insert | ~3,507 ops/sec | ~30,655 ops/sec | **9x faster** |
+| Select By ID | ~337,456 ops/sec | ~912,229 ops/sec | **2.7x faster** |
+| Update | ~5,312 ops/sec | ~173,320 ops/sec | **33x faster** |
+| Delete | ~243,339 ops/sec | ~705,729 ops/sec | **2.9x faster** |
+| Concurrent Write | ~5,063 ops/sec | ~64,000 ops/sec | **13x faster** |
 
 > **WAL mode is essential for write-intensive applications.** The performance improvement is dramatic across all write operations.
 
