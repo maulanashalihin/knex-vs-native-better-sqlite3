@@ -1,18 +1,18 @@
 {
   "name": "benchmarkdb",
   "version": "1.0.0",
-  "description": "Benchmark comparison between native better-sqlite3 and Knex.js",
-  "main": "benchmark.js",
+  "description": "Benchmark comparison between native better-sqlite3, Knex.js, and Kysely",
+  "main": "sqlite-benchmark.js",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
-    "benchmark": "node sqlite-benchmark.js",
-    "benchmark:turso": "node turso-benchmark.js"
+    "benchmark": "node sqlite-benchmark.js"
   },
   "keywords": [
     "benchmark",
     "sqlite",
     "better-sqlite3",
-    "knex"
+    "knex",
+    "kysely"
   ],
   "author": "",
   "license": "ISC",
@@ -21,7 +21,6 @@
     "better-sqlite3": "^12.4.1",
     "dotenv": "^16.5.0",
     "knex": "^2.5.1",
-    "pg": "^8.16.0",
-    "@libsql/client": "^0.15.15"
+    "kysely": "^0.28.16"
   }
 }

@@ -1,46 +1,88 @@
 const Benchmark = require('benchmark');
 const Database = require('better-sqlite3');
 const Knex = require('knex');
-const { createClient } = require('@libsql/client');
+const { Kysely, SqliteDialect } = require('kysely');
+const Sqlite = require('better-sqlite3');
 const fs = require('fs');
 const path = require('path');
 
 // Database file paths
 const NATIVE_DB_PATH = path.join(__dirname, 'native.db');
-const KNEX_DB_PATH = path.join(__dirname, 'knex.db');
-const LIBSQL_DB_PATH = path.join(__dirname, 'libsql.db');
 const NATIVE_WAL_DB_PATH = path.join(__dirname, 'native-wal.db');
 const KNEX_WAL_DB_PATH = path.join(__dirname, 'knex-wal.db');
+const KYSELY_WAL_DB_PATH = path.join(__dirname, 'kysely-wal.db');
+const KYSELY_GENERIC_WAL_DB_PATH = path.join(__dirname, 'kysely-generic-wal.db');
 
 // Clean up existing database files
-if (fs.existsSync(NATIVE_DB_PATH)) fs.unlinkSync(NATIVE_DB_PATH);
-if (fs.existsSync(KNEX_DB_PATH)) fs.unlinkSync(KNEX_DB_PATH);
-if (fs.existsSync(LIBSQL_DB_PATH)) fs.unlinkSync(LIBSQL_DB_PATH);
-if (fs.existsSync(NATIVE_WAL_DB_PATH)) fs.unlinkSync(NATIVE_WAL_DB_PATH);
-if (fs.existsSync(KNEX_WAL_DB_PATH)) fs.unlinkSync(KNEX_WAL_DB_PATH);
+function cleanupFiles() {
+  [NATIVE_DB_PATH, NATIVE_WAL_DB_PATH, KNEX_WAL_DB_PATH, KYSELY_WAL_DB_PATH, KYSELY_GENERIC_WAL_DB_PATH].forEach(file => {
+    if (fs.existsSync(file)) fs.unlinkSync(file);
+    // Also clean up WAL and SHM files
+    if (fs.existsSync(file + '-wal')) fs.unlinkSync(file + '-wal');
+    if (fs.existsSync(file + '-shm')) fs.unlinkSync(file + '-shm');
+  });
+}
+
+cleanupFiles();
 
 // Initialize databases
+// Native better-sqlite3 (DELETE journal mode - default)
 const nativeDb = new Database(NATIVE_DB_PATH);
-const knexDb = Knex({
-  client: 'better-sqlite3',
-  connection: {
-    filename: KNEX_DB_PATH
-  },
-  useNullAsDefault: true
-});
-const libsqlDb = createClient({ url: `file:${LIBSQL_DB_PATH}` });
+
+// Native better-sqlite3 (WAL mode)
 const nativeWalDb = new Database(NATIVE_WAL_DB_PATH);
 nativeWalDb.pragma('journal_mode = WAL');
-const knexWalDb = Knex({
+
+const knexDb = Knex({
   client: 'better-sqlite3',
   connection: { filename: KNEX_WAL_DB_PATH },
   useNullAsDefault: true
 });
 
+// Set WAL mode for Knex - need to run PRAGMA on the actual connection
+const knexDbConnection = new Sqlite(KNEX_WAL_DB_PATH);
+knexDbConnection.pragma('journal_mode = WAL');
+knexDbConnection.close();
+
+// For Kysely, we need to use a connection to run raw queries
+// We'll create the table using Kysely's schema builder alternative - raw SQL through better-sqlite3
+const kyselyDbConnection = new Sqlite(KYSELY_WAL_DB_PATH);
+kyselyDbConnection.pragma('journal_mode = WAL');
+
+const kyselyDb = new Kysely({
+  dialect: new SqliteDialect({
+    database: kyselyDbConnection
+  })
+});
+
+const kyselyGenericDbConnection = new Sqlite(KYSELY_GENERIC_WAL_DB_PATH);
+kyselyGenericDbConnection.pragma('journal_mode = WAL');
+
+const kyselyGenericDb = new Kysely({
+  dialect: new SqliteDialect({
+    database: kyselyGenericDbConnection
+  })
+});
+
+// Database schema interface for Kysely
+/**
+ * @typedef {Object} UsersTable
+ * @property {number} id
+ * @property {string} name
+ * @property {string} email
+ * @property {number} age
+ * @property {string} created_at
+ */
+
+/**
+ * @typedef {Object} Database
+ * @property {UsersTable} users
+ * @property {UsersTable} cw_users
+ */
+
 // Create tables
 async function setupDatabases() {
-  // Native better-sqlite3 setup
-  nativeDb.exec(`
+  const createTableSQL = `
     CREATE TABLE users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -48,9 +90,15 @@ async function setupDatabases() {
       age INTEGER,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
-  `);
+  `;
 
-  // Knex.js setup
+  // Native better-sqlite3 (DELETE journal mode - default)
+  nativeDb.exec(createTableSQL);
+
+  // Native better-sqlite3 (WAL mode)
+  nativeWalDb.exec(createTableSQL);
+
+  // Knex.js
   await knexDb.schema.createTable('users', table => {
     table.increments('id');
     table.string('name').notNullable();
@@ -58,16 +106,12 @@ async function setupDatabases() {
     table.integer('age');
     table.timestamp('created_at').defaultTo(knexDb.fn.now());
   });
-  await libsqlDb.execute(`
-    CREATE TABLE users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      email TEXT NOT NULL,
-      age INTEGER,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await knexWalDb.raw('PRAGMA journal_mode = WAL');
+
+  // Kysely - use raw SQLite connection for DDL
+  kyselyDbConnection.exec(createTableSQL);
+
+  // Kysely Generic - use raw SQLite connection for DDL
+  kyselyGenericDbConnection.exec(createTableSQL);
 }
 
 // Generate random user data
@@ -86,26 +130,11 @@ const updateSuite = new Benchmark.Suite('Update Operations');
 const deleteSuite = new Benchmark.Suite('Delete Operations');
 const complexSuite = new Benchmark.Suite('Complex Operations');
 
-// Helper function to properly benchmark async operations
-function benchmarkAsync(fn) {
-  return {
-    defer: true,
-    fn: function(deferred) {
-      Promise.resolve(fn())
-        .then(() => deferred.resolve())
-        .catch(err => {
-          console.error('Benchmark error:', err);
-          deferred.resolve();
-        });
-    }
-  };
-}
-
 // Number of records to use in benchmarks
 const NUM_RECORDS = 100;
 
 async function setupConcurrentTables() {
-  nativeDb.exec(`
+  const createConcurrentTableSQL = `
     CREATE TABLE IF NOT EXISTS cw_users (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       name TEXT NOT NULL,
@@ -113,52 +142,33 @@ async function setupConcurrentTables() {
       age INTEGER,
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     )
-  `);
-  await knexDb.schema.hasTable('cw_users').then(async exists => {
-    if (!exists) {
-      await knexDb.schema.createTable('cw_users', table => {
-        table.increments('id');
-        table.string('name').notNullable();
-        table.string('email').notNullable();
-        table.integer('age');
-        table.timestamp('created_at').defaultTo(knexDb.fn.now());
-      });
-    }
-  });
-  await libsqlDb.execute(`
-    CREATE TABLE IF NOT EXISTS cw_users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      email TEXT NOT NULL,
-      age INTEGER,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  nativeWalDb.exec(`
-    CREATE TABLE IF NOT EXISTS cw_users (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      name TEXT NOT NULL,
-      email TEXT NOT NULL,
-      age INTEGER,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await knexWalDb.schema.hasTable('cw_users').then(async exists => {
-    if (!exists) {
-      await knexWalDb.schema.createTable('cw_users', table => {
-        table.increments('id');
-        table.string('name').notNullable();
-        table.string('email').notNullable();
-        table.integer('age');
-        table.timestamp('created_at').defaultTo(knexWalDb.fn.now());
-      });
-    }
-  });
+  `;
+
+  nativeDb.exec(createConcurrentTableSQL);
+  nativeWalDb.exec(createConcurrentTableSQL);
+
+  const knexExists = await knexDb.schema.hasTable('cw_users');
+  if (!knexExists) {
+    await knexDb.schema.createTable('cw_users', table => {
+      table.increments('id');
+      table.string('name').notNullable();
+      table.string('email').notNullable();
+      table.integer('age');
+      table.timestamp('created_at').defaultTo(knexDb.fn.now());
+    });
+  }
+
+  // Kysely - use raw SQLite connection for DDL
+  kyselyDbConnection.exec(createConcurrentTableSQL);
+  
+  // Kysely Generic - use raw SQLite connection for DDL
+  kyselyGenericDbConnection.exec(createConcurrentTableSQL);
 }
 
 async function runConcurrentWriteTest() {
   const WRITERS = 8;
   const WRITES_PER_WRITER = 200;
+  
   function user(i) {
     return {
       name: `CW ${i}`,
@@ -166,10 +176,12 @@ async function runConcurrentWriteTest() {
       age: Math.floor(Math.random() * 50) + 18
     };
   }
+
   async function runEngine(name, createClients, insertOne) {
     const clients = createClients(WRITERS);
     const start = Date.now();
     let errors = 0;
+    
     await Promise.all(clients.map((client, idx) => (async () => {
       for (let j = 0; j < WRITES_PER_WRITER; j++) {
         const u = user(idx * WRITES_PER_WRITER + j);
@@ -180,46 +192,87 @@ async function runConcurrentWriteTest() {
         }
       }
     })()));
+    
     const ms = Date.now() - start;
     const total = WRITERS * WRITES_PER_WRITER;
     const throughput = Math.round((total / ms) * 1000);
     console.log(`\nConcurrent Write (${name})`);
-    console.log(`  total: ${total}, errors: ${errors}, throughput: ${throughput} ops/sec`);
+    console.log(`  total: ${total}, errors: ${errors}, ~${throughput.toLocaleString()} ops/sec`);
   }
+
   await setupConcurrentTables();
+
   await runEngine(
-    'native',
+    'native (DELETE)',
     n => Array.from({ length: n }, () => new Database(NATIVE_DB_PATH)),
-    async (db, u) => { db.prepare('INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)').run(u.name, u.email, u.age); }
+    async (db, u) => {
+      db.prepare('INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)').run(u.name, u.email, u.age);
+    }
   );
+
   await runEngine(
     'native-wal',
-    n => Array.from({ length: n }, () => { const d = new Database(NATIVE_WAL_DB_PATH); d.pragma('journal_mode = WAL'); return d; }),
-    async (db, u) => { db.prepare('INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)').run(u.name, u.email, u.age); }
+    n => Array.from({ length: n }, () => {
+      const d = new Database(NATIVE_WAL_DB_PATH);
+      d.pragma('journal_mode = WAL');
+      return d;
+    }),
+    async (db, u) => {
+      db.prepare('INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)').run(u.name, u.email, u.age);
+    }
   );
-  await runEngine(
-    'knex',
-    n => Array.from({ length: n }, () => Knex({ client: 'better-sqlite3', connection: { filename: KNEX_DB_PATH }, useNullAsDefault: true })),
-    async (k, u) => { await k('cw_users').insert(u); }
-  );
+
   await runEngine(
     'knex-wal',
-    n => Array.from({ length: n }, () => Knex({ client: 'better-sqlite3', connection: { filename: KNEX_WAL_DB_PATH }, useNullAsDefault: true })),
-    async (k, u) => { await k('cw_users').insert(u); }
+    n => Array.from({ length: n }, () => Knex({
+      client: 'better-sqlite3',
+      connection: { filename: KNEX_WAL_DB_PATH },
+      useNullAsDefault: true
+    })),
+    async (k, u) => {
+      await k('cw_users').insert(u);
+    }
   );
+
   await runEngine(
-    'libsql',
-    n => Array.from({ length: n }, () => createClient({ url: `file:${LIBSQL_DB_PATH}` })),
-    async (c, u) => { await c.execute({ sql: 'INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)', args: [u.name, u.email, u.age] }); }
+    'kysely-wal',
+    n => Array.from({ length: n }, () => {
+      const conn = new Sqlite(KYSELY_WAL_DB_PATH);
+      return new Kysely({
+        dialect: new SqliteDialect({
+          database: conn
+        })
+      });
+    }),
+    async (k, u) => {
+      await k.insertInto('cw_users').values({ name: u.name, email: u.email, age: u.age }).execute();
+    },
+    k => k.destroy()
+  );
+
+  await runEngine(
+    'kysely-generic-wal',
+    n => Array.from({ length: n }, () => {
+      const conn = new Sqlite(KYSELY_GENERIC_WAL_DB_PATH);
+      return new Kysely({
+        dialect: new SqliteDialect({
+          database: conn
+        })
+      });
+    }),
+    async (k, u) => {
+      await k.insertInto('cw_users').values({ name: u.name, email: u.email, age: u.age }).execute();
+    },
+    k => k.destroy()
   );
 }
 
 async function clearConcurrentTables() {
   try { nativeDb.exec('DELETE FROM cw_users'); } catch {}
-  try { await knexDb('cw_users').delete(); } catch {}
-  try { await libsqlDb.execute('DELETE FROM cw_users'); } catch {}
   try { nativeWalDb.exec('DELETE FROM cw_users'); } catch {}
-  try { await knexWalDb('cw_users').delete(); } catch {}
+  try { await knexDb('cw_users').delete(); } catch {}
+  try { kyselyDbConnection.exec('DELETE FROM cw_users'); } catch {}
+  try { kyselyGenericDbConnection.exec('DELETE FROM cw_users'); } catch {}
 }
 
 async function seedConcurrentTables(rows) {
@@ -228,26 +281,54 @@ async function seedConcurrentTables(rows) {
     email: `seed${i + 1}@example.com`,
     age: Math.floor(Math.random() * 50) + 18
   }));
+
+  // Native (DELETE)
   const ni = nativeDb.prepare('INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)');
-  const nt = nativeDb.transaction(arr => { for (const u of arr) { ni.run(u.name, u.email, u.age); } });
+  const nt = nativeDb.transaction(arr => {
+    for (const u of arr) {
+      ni.run(u.name, u.email, u.age);
+    }
+  });
   nt(users);
+
+  // Native (WAL)
+  const niw = nativeWalDb.prepare('INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)');
+  const ntw = nativeWalDb.transaction(arr => {
+    for (const u of arr) {
+      niw.run(u.name, u.email, u.age);
+    }
+  });
+  ntw(users);
+
+  // Knex
   const BATCH = 500;
   for (let i = 0; i < users.length; i += BATCH) {
     const batch = users.slice(i, i + BATCH);
     await knexDb('cw_users').insert(batch);
   }
+
+  // Kysely - use raw SQLite for batch inserts
+  const ki = kyselyDbConnection.prepare('INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)');
+  const kt = kyselyDbConnection.transaction(arr => {
+    for (const u of arr) {
+      ki.run(u.name, u.email, u.age);
+    }
+  });
   for (let i = 0; i < users.length; i += BATCH) {
     const batch = users.slice(i, i + BATCH);
-    const stmts = batch.map(u => ({ sql: 'INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)', args: [u.name, u.email, u.age] }));
-    await libsqlDb.batch(stmts, 'write');
+    kt(batch);
   }
-  const niw = nativeWalDb.prepare('INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)');
-  const ntw = nativeWalDb.transaction(arr => { for (const u of arr) { niw.run(u.name, u.email, u.age); } });
-  ntw(users);
-  const knexWal = knexWalDb;
+
+  // Kysely Generic
+  const kgi = kyselyGenericDbConnection.prepare('INSERT INTO cw_users (name, email, age) VALUES (?, ?, ?)');
+  const kgt = kyselyGenericDbConnection.transaction(arr => {
+    for (const u of arr) {
+      kgi.run(u.name, u.email, u.age);
+    }
+  });
   for (let i = 0; i < users.length; i += BATCH) {
     const batch = users.slice(i, i + BATCH);
-    await knexWal('cw_users').insert(batch);
+    kgt(batch);
   }
 }
 
@@ -255,12 +336,15 @@ async function runConcurrentUpdateTest() {
   const WRITERS = 8;
   const WRITES_PER_WRITER = 200;
   const TOTAL_ROWS = WRITERS * WRITES_PER_WRITER;
+  
   function randId() { return Math.floor(Math.random() * TOTAL_ROWS) + 1; }
   function randAge() { return Math.floor(Math.random() * 50) + 18; }
+  
   async function runEngine(name, createClients, updateOne, cleanup) {
     const clients = createClients(WRITERS);
     const start = Date.now();
     let errors = 0;
+    
     await Promise.all(clients.map((client) => (async () => {
       for (let j = 0; j < WRITES_PER_WRITER; j++) {
         const id = randId();
@@ -272,61 +356,112 @@ async function runConcurrentUpdateTest() {
         }
       }
     })()));
+    
     const ms = Date.now() - start;
     const total = WRITERS * WRITES_PER_WRITER;
     const throughput = Math.round((total / ms) * 1000);
     console.log(`\nConcurrent Update (${name})`);
-    console.log(`  total: ${total}, errors: ${errors}, throughput: ${throughput} ops/sec`);
+    console.log(`  total: ${total}, errors: ${errors}, ~${throughput.toLocaleString()} ops/sec`);
     if (cleanup) clients.forEach(c => cleanup(c));
   }
+
   await setupConcurrentTables();
   await clearConcurrentTables();
   await seedConcurrentTables(TOTAL_ROWS);
+
   await runEngine(
-    'native',
+    'native (DELETE)',
     n => Array.from({ length: n }, () => new Database(NATIVE_DB_PATH)),
-    async (db, id, age) => { db.prepare('UPDATE cw_users SET age = ? WHERE id = ?').run(age, id); },
+    async (db, id, age) => {
+      db.prepare('UPDATE cw_users SET age = ? WHERE id = ?').run(age, id);
+    },
     db => db.close()
   );
+
   await runEngine(
     'native-wal',
-    n => Array.from({ length: n }, () => { const d = new Database(NATIVE_WAL_DB_PATH); d.pragma('journal_mode = WAL'); return d; }),
-    async (db, id, age) => { db.prepare('UPDATE cw_users SET age = ? WHERE id = ?').run(age, id); },
+    n => Array.from({ length: n }, () => {
+      const d = new Database(NATIVE_WAL_DB_PATH);
+      d.pragma('journal_mode = WAL');
+      return d;
+    }),
+    async (db, id, age) => {
+      db.prepare('UPDATE cw_users SET age = ? WHERE id = ?').run(age, id);
+    },
     db => db.close()
   );
-  await runEngine(
-    'knex',
-    n => Array.from({ length: n }, () => Knex({ client: 'better-sqlite3', connection: { filename: KNEX_DB_PATH }, useNullAsDefault: true })),
-    async (k, id, age) => { await k('cw_users').where('id', id).update({ age }); },
-    k => k.destroy()
-  );
+
   await runEngine(
     'knex-wal',
-    n => Array.from({ length: n }, () => { const k = Knex({ client: 'better-sqlite3', connection: { filename: KNEX_WAL_DB_PATH }, useNullAsDefault: true }); return k; }),
-    async (k, id, age) => { await k('cw_users').where('id', id).update({ age }); },
+    n => Array.from({ length: n }, () => Knex({
+      client: 'better-sqlite3',
+      connection: { filename: KNEX_WAL_DB_PATH },
+      useNullAsDefault: true
+    })),
+    async (k, id, age) => {
+      await k('cw_users').where('id', id).update({ age });
+    },
     k => k.destroy()
   );
+
   await runEngine(
-    'libsql',
-    n => Array.from({ length: n }, () => createClient({ url: `file:${LIBSQL_DB_PATH}` })),
-    async (c, id, age) => { await c.execute({ sql: 'UPDATE cw_users SET age = ? WHERE id = ?', args: [age, id] }); }
+    'kysely-wal',
+    n => Array.from({ length: n }, () => {
+      const k = new Kysely({
+        dialect: new SqliteDialect({
+          database: new Sqlite(KYSELY_WAL_DB_PATH)
+        })
+      });
+      return k;
+    }),
+    async (k, id, age) => {
+      await k.updateTable('cw_users').set({ age }).where('id', '=', id).execute();
+    },
+    k => k.destroy()
+  );
+
+  await runEngine(
+    'kysely-generic-wal',
+    n => Array.from({ length: n }, () => {
+      const k = new Kysely({
+        dialect: new SqliteDialect({
+          database: new Sqlite(KYSELY_GENERIC_WAL_DB_PATH)
+        })
+      });
+      return k;
+    }),
+    async (k, id, age) => {
+      await k.updateTable('cw_users').set({ age }).where('id', '=', id).execute();
+    },
+    k => k.destroy()
   );
 }
 
 // Setup insert benchmarks
 function setupInsertBenchmarks() {
-  // Prepare statements for native better-sqlite3
   const nativeInsert = nativeDb.prepare('INSERT INTO users (name, email, age) VALUES (?, ?, ?)');
+  const nativeWalInsert = nativeWalDb.prepare('INSERT INTO users (name, email, age) VALUES (?, ?, ?)');
+
+  // Kysely prepared statements
+  const kyselyInsert = kyselyDbConnection.prepare('INSERT INTO users (name, email, age) VALUES (?, ?, ?)');
+  const kyselyGenericInsert = kyselyGenericDbConnection.prepare('INSERT INTO users (name, email, age) VALUES (?, ?, ?)');
 
   insertSuite
-    .add('Native better-sqlite3 - Single Insert', {
+    .add('Native better-sqlite3 (DELETE) - Single Insert', {
       minSamples: 5,
       fn: function() {
         const user = generateUser(Math.random());
         nativeInsert.run(user.name, user.email, user.age);
       }
     })
-    .add('Knex.js - Single Insert', {
+    .add('Native better-sqlite3 (WAL) - Single Insert', {
+      minSamples: 5,
+      fn: function() {
+        const user = generateUser(Math.random());
+        nativeWalInsert.run(user.name, user.email, user.age);
+      }
+    })
+    .add('Knex.js (WAL) - Single Insert', {
       minSamples: 5,
       defer: true,
       fn: function(deferred) {
@@ -334,25 +469,26 @@ function setupInsertBenchmarks() {
         knexDb('users').insert(user)
           .then(() => deferred.resolve())
           .catch(err => {
-            console.error('Benchmark error:', err);
+            console.error('Knex insert error:', err);
             deferred.resolve();
           });
       }
     })
-    .add('libSQL (Turso embedded) - Single Insert', {
+    .add('Kysely (WAL) - Single Insert', {
       minSamples: 5,
-      defer: true,
-      fn: function(deferred) {
+      fn: function() {
         const user = generateUser(Math.random());
-        libsqlDb.execute({ sql: 'INSERT INTO users (name, email, age) VALUES (?, ?, ?)', args: [user.name, user.email, user.age] })
-          .then(() => deferred.resolve())
-          .catch(err => {
-            console.error('Benchmark error:', err);
-            deferred.resolve();
-          });
+        kyselyInsert.run(user.name, user.email, user.age);
       }
     })
-    .add('Native better-sqlite3 - Batch Insert (Transaction)', {
+    .add('Kysely Generic (WAL) - Single Insert', {
+      minSamples: 5,
+      fn: function() {
+        const user = generateUser(Math.random());
+        kyselyGenericInsert.run(user.name, user.email, user.age);
+      }
+    })
+    .add('Native better-sqlite3 (DELETE) - Batch Insert (Transaction)', {
       minSamples: 5,
       fn: function() {
         const transaction = nativeDb.transaction((users) => {
@@ -360,12 +496,23 @@ function setupInsertBenchmarks() {
             nativeInsert.run(user.name, user.email, user.age);
           }
         });
-        
         const users = Array.from({ length: 5 }, (_, i) => generateUser(i));
         transaction(users);
       }
     })
-    .add('Knex.js - Batch Insert', {
+    .add('Native better-sqlite3 (WAL) - Batch Insert (Transaction)', {
+      minSamples: 5,
+      fn: function() {
+        const transaction = nativeWalDb.transaction((users) => {
+          for (const user of users) {
+            nativeWalInsert.run(user.name, user.email, user.age);
+          }
+        });
+        const users = Array.from({ length: 5 }, (_, i) => generateUser(i));
+        transaction(users);
+      }
+    })
+    .add('Knex.js (WAL) - Batch Insert', {
       minSamples: 5,
       defer: true,
       fn: function(deferred) {
@@ -373,73 +520,108 @@ function setupInsertBenchmarks() {
         knexDb('users').insert(users)
           .then(() => deferred.resolve())
           .catch(err => {
-            console.error('Benchmark error:', err);
+            console.error('Knex batch insert error:', err);
             deferred.resolve();
           });
       }
     })
-    .add('libSQL (Turso embedded) - Batch Insert', {
+    .add('Kysely (WAL) - Batch Insert (Transaction)', {
       minSamples: 5,
-      defer: true,
-      fn: function(deferred) {
+      fn: function() {
+        const transaction = kyselyDbConnection.transaction((users) => {
+          for (const user of users) {
+            kyselyInsert.run(user.name, user.email, user.age);
+          }
+        });
         const users = Array.from({ length: 5 }, (_, i) => generateUser(i));
-        const statements = users.map(u => ({ sql: 'INSERT INTO users (name, email, age) VALUES (?, ?, ?)', args: [u.name, u.email, u.age] }));
-        libsqlDb.batch(statements, 'write')
-          .then(() => deferred.resolve())
-          .catch(err => {
-            console.error('Benchmark error:', err);
-            deferred.resolve();
-          });
+        transaction(users);
+      }
+    })
+    .add('Kysely Generic (WAL) - Batch Insert (Transaction)', {
+      minSamples: 5,
+      fn: function() {
+        const transaction = kyselyGenericDbConnection.transaction((users) => {
+          for (const user of users) {
+            kyselyGenericInsert.run(user.name, user.email, user.age);
+          }
+        });
+        const users = Array.from({ length: 5 }, (_, i) => generateUser(i));
+        transaction(users);
       }
     });
 }
 
 // Setup select benchmarks
 function setupSelectBenchmarks() {
-  // Prepare statements for native better-sqlite3
   const nativeSelectAll = nativeDb.prepare('SELECT * FROM users LIMIT 20');
   const nativeSelectById = nativeDb.prepare('SELECT * FROM users WHERE id = ?');
   const nativeSelectByAge = nativeDb.prepare('SELECT * FROM users WHERE age > ? LIMIT 20');
+  
+  const nativeWalSelectAll = nativeWalDb.prepare('SELECT * FROM users LIMIT 20');
+  const nativeWalSelectById = nativeWalDb.prepare('SELECT * FROM users WHERE id = ?');
+  const nativeWalSelectByAge = nativeWalDb.prepare('SELECT * FROM users WHERE age > ? LIMIT 20');
+  
+  // Kysely prepared statements
+  const kyselySelectAll = kyselyDbConnection.prepare('SELECT * FROM users LIMIT 20');
+  const kyselySelectById = kyselyDbConnection.prepare('SELECT * FROM users WHERE id = ?');
+  const kyselySelectByAge = kyselyDbConnection.prepare('SELECT * FROM users WHERE age > ? LIMIT 20');
+  
+  const kyselyGenericSelectAll = kyselyGenericDbConnection.prepare('SELECT * FROM users LIMIT 20');
+  const kyselyGenericSelectById = kyselyGenericDbConnection.prepare('SELECT * FROM users WHERE id = ?');
+  const kyselyGenericSelectByAge = kyselyGenericDbConnection.prepare('SELECT * FROM users WHERE age > ? LIMIT 20');
 
   selectSuite
-    .add('Native better-sqlite3 - Select All', {
+    .add('Native better-sqlite3 (DELETE) - Select All', {
       minSamples: 5,
       fn: function() {
         nativeSelectAll.all();
       }
     })
-    .add('Knex.js - Select All', {
+    .add('Native better-sqlite3 (WAL) - Select All', {
+      minSamples: 5,
+      fn: function() {
+        nativeWalSelectAll.all();
+      }
+    })
+    .add('Knex.js (WAL) - Select All', {
       minSamples: 5,
       defer: true,
       fn: function(deferred) {
         knexDb('users').limit(20).select('*')
           .then(() => deferred.resolve())
           .catch(err => {
-            console.error('Benchmark error:', err);
+            console.error('Knex select all error:', err);
             deferred.resolve();
           });
       }
     })
-    .add('libSQL (Turso embedded) - Select All', {
+    .add('Kysely (WAL) - Select All', {
       minSamples: 5,
-      defer: true,
-      fn: function(deferred) {
-        libsqlDb.execute('SELECT * FROM users LIMIT 20')
-          .then(() => deferred.resolve())
-          .catch(err => {
-            console.error('Benchmark error:', err);
-            deferred.resolve();
-          });
+      fn: function() {
+        kyselySelectAll.all();
       }
     })
-    .add('Native better-sqlite3 - Select By Id', {
+    .add('Kysely Generic (WAL) - Select All', {
+      minSamples: 5,
+      fn: function() {
+        kyselyGenericSelectAll.all();
+      }
+    })
+    .add('Native better-sqlite3 (DELETE) - Select By Id', {
       minSamples: 5,
       fn: function() {
         const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
         nativeSelectById.get(id);
       }
     })
-    .add('Knex.js - Select By Id', {
+    .add('Native better-sqlite3 (WAL) - Select By Id', {
+      minSamples: 5,
+      fn: function() {
+        const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
+        nativeWalSelectById.get(id);
+      }
+    })
+    .add('Knex.js (WAL) - Select By Id', {
       minSamples: 5,
       defer: true,
       fn: function(deferred) {
@@ -447,63 +629,74 @@ function setupSelectBenchmarks() {
         knexDb('users').where('id', id).first()
           .then(() => deferred.resolve())
           .catch(err => {
-            console.error('Benchmark error:', err);
+            console.error('Knex select by id error:', err);
             deferred.resolve();
           });
       }
     })
-    .add('libSQL (Turso embedded) - Select By Id', {
+    .add('Kysely (WAL) - Select By Id', {
       minSamples: 5,
-      defer: true,
-      fn: function(deferred) {
+      fn: function() {
         const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
-        libsqlDb.execute({ sql: 'SELECT * FROM users WHERE id = ?', args: [id] })
-          .then(() => deferred.resolve())
-          .catch(err => {
-            console.error('Benchmark error:', err);
-            deferred.resolve();
-          });
+        kyselySelectById.get(id);
       }
     })
-    .add('Native better-sqlite3 - Select By Condition', {
+    .add('Kysely Generic (WAL) - Select By Id', {
+      minSamples: 5,
+      fn: function() {
+        const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
+        kyselyGenericSelectById.get(id);
+      }
+    })
+    .add('Native better-sqlite3 (DELETE) - Select By Condition', {
       minSamples: 5,
       fn: function() {
         nativeSelectByAge.all(30);
       }
     })
-    .add('Knex.js - Select By Condition', {
+    .add('Native better-sqlite3 (WAL) - Select By Condition', {
+      minSamples: 5,
+      fn: function() {
+        nativeWalSelectByAge.all(30);
+      }
+    })
+    .add('Knex.js (WAL) - Select By Condition', {
       minSamples: 5,
       defer: true,
       fn: function(deferred) {
         knexDb('users').where('age', '>', 30).limit(20).select('*')
           .then(() => deferred.resolve())
           .catch(err => {
-            console.error('Benchmark error:', err);
+            console.error('Knex select by condition error:', err);
             deferred.resolve();
           });
       }
     })
-    .add('libSQL (Turso embedded) - Select By Condition', {
+    .add('Kysely (WAL) - Select By Condition', {
       minSamples: 5,
-      defer: true,
-      fn: function(deferred) {
-        libsqlDb.execute({ sql: 'SELECT * FROM users WHERE age > ? LIMIT 20', args: [30] })
-          .then(() => deferred.resolve())
-          .catch(err => {
-            console.error('Benchmark error:', err);
-            deferred.resolve();
-          });
+      fn: function() {
+        kyselySelectByAge.all(30);
+      }
+    })
+    .add('Kysely Generic (WAL) - Select By Condition', {
+      minSamples: 5,
+      fn: function() {
+        kyselyGenericSelectByAge.all(30);
       }
     });
 }
 
 // Setup update benchmarks
 function setupUpdateBenchmarks() {
-  // Prepare statements for native better-sqlite3
   const nativeUpdate = nativeDb.prepare('UPDATE users SET age = ? WHERE id = ?');
+  const nativeWalUpdate = nativeWalDb.prepare('UPDATE users SET age = ? WHERE id = ?');
+  
+  // Kysely prepared statements
+  const kyselyUpdate = kyselyDbConnection.prepare('UPDATE users SET age = ? WHERE id = ?');
+  const kyselyGenericUpdate = kyselyGenericDbConnection.prepare('UPDATE users SET age = ? WHERE id = ?');
 
   updateSuite
-    .add('Native better-sqlite3 - Update Single Record', {
+    .add('Native better-sqlite3 (DELETE) - Update Single Record', {
       minSamples: 5,
       fn: function() {
         const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
@@ -511,7 +704,15 @@ function setupUpdateBenchmarks() {
         nativeUpdate.run(age, id);
       }
     })
-    .add('Knex.js - Update Single Record', {
+    .add('Native better-sqlite3 (WAL) - Update Single Record', {
+      minSamples: 5,
+      fn: function() {
+        const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
+        const age = Math.floor(Math.random() * 50) + 18;
+        nativeWalUpdate.run(age, id);
+      }
+    })
+    .add('Knex.js (WAL) - Update Single Record', {
       minSamples: 5,
       defer: true,
       fn: function(deferred) {
@@ -520,41 +721,54 @@ function setupUpdateBenchmarks() {
         knexDb('users').where('id', id).update({ age })
           .then(() => deferred.resolve())
           .catch(err => {
-            console.error('Benchmark error:', err);
+            console.error('Knex update error:', err);
             deferred.resolve();
           });
       }
     })
-    .add('libSQL (Turso embedded) - Update Single Record', {
+    .add('Kysely (WAL) - Update Single Record', {
       minSamples: 5,
-      defer: true,
-      fn: function(deferred) {
+      fn: function() {
         const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
         const age = Math.floor(Math.random() * 50) + 18;
-        libsqlDb.execute({ sql: 'UPDATE users SET age = ? WHERE id = ?', args: [age, id] })
-          .then(() => deferred.resolve())
-          .catch(err => {
-            console.error('Benchmark error:', err);
-            deferred.resolve();
-          });
+        kyselyUpdate.run(age, id);
+      }
+    })
+    .add('Kysely Generic (WAL) - Update Single Record', {
+      minSamples: 5,
+      fn: function() {
+        const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
+        const age = Math.floor(Math.random() * 50) + 18;
+        kyselyGenericUpdate.run(age, id);
       }
     });
 }
 
 // Setup delete benchmarks
 function setupDeleteBenchmarks() {
-  // Prepare statements for native better-sqlite3
   const nativeDelete = nativeDb.prepare('DELETE FROM users WHERE id = ?');
+  const nativeWalDelete = nativeWalDb.prepare('DELETE FROM users WHERE id = ?');
+  
+  // Kysely prepared statements
+  const kyselyDelete = kyselyDbConnection.prepare('DELETE FROM users WHERE id = ?');
+  const kyselyGenericDelete = kyselyGenericDbConnection.prepare('DELETE FROM users WHERE id = ?');
 
   deleteSuite
-    .add('Native better-sqlite3 - Delete Single Record', {
+    .add('Native better-sqlite3 (DELETE) - Delete Single Record', {
       minSamples: 5,
       fn: function() {
         const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
         nativeDelete.run(id);
       }
     })
-    .add('Knex.js - Delete Single Record', {
+    .add('Native better-sqlite3 (WAL) - Delete Single Record', {
+      minSamples: 5,
+      fn: function() {
+        const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
+        nativeWalDelete.run(id);
+      }
+    })
+    .add('Knex.js (WAL) - Delete Single Record', {
       minSamples: 5,
       defer: true,
       fn: function(deferred) {
@@ -562,47 +776,84 @@ function setupDeleteBenchmarks() {
         knexDb('users').where('id', id).delete()
           .then(() => deferred.resolve())
           .catch(err => {
-            console.error('Benchmark error:', err);
+            console.error('Knex delete error:', err);
             deferred.resolve();
           });
       }
     })
-    .add('libSQL (Turso embedded) - Delete Single Record', {
+    .add('Kysely (WAL) - Delete Single Record', {
       minSamples: 5,
-      defer: true,
-      fn: function(deferred) {
+      fn: function() {
         const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
-        libsqlDb.execute({ sql: 'DELETE FROM users WHERE id = ?', args: [id] })
-          .then(() => deferred.resolve())
-          .catch(err => {
-            console.error('Benchmark error:', err);
-            deferred.resolve();
-          });
+        kyselyDelete.run(id);
+      }
+    })
+    .add('Kysely Generic (WAL) - Delete Single Record', {
+      minSamples: 5,
+      fn: function() {
+        const id = Math.floor(Math.random() * NUM_RECORDS) + 1;
+        kyselyGenericDelete.run(id);
       }
     });
 }
 
 // Setup complex query benchmarks
 function setupComplexBenchmarks() {
-  // Prepare statements for native better-sqlite3
   const nativeComplex = nativeDb.prepare(`
-    SELECT 
-      COUNT(*) as count, 
-      AVG(age) as average_age, 
-      MIN(age) as min_age, 
-      MAX(age) as max_age 
-    FROM users 
+    SELECT
+      COUNT(*) as count,
+      AVG(age) as average_age,
+      MIN(age) as min_age,
+      MAX(age) as max_age
+    FROM users
+    WHERE age > ?
+  `);
+  
+  const nativeWalComplex = nativeWalDb.prepare(`
+    SELECT
+      COUNT(*) as count,
+      AVG(age) as average_age,
+      MIN(age) as min_age,
+      MAX(age) as max_age
+    FROM users
+    WHERE age > ?
+  `);
+  
+  // Kysely prepared statements
+  const kyselyComplex = kyselyDbConnection.prepare(`
+    SELECT
+      COUNT(*) as count,
+      AVG(age) as average_age,
+      MIN(age) as min_age,
+      MAX(age) as max_age
+    FROM users
+    WHERE age > ?
+  `);
+  
+  const kyselyGenericComplex = kyselyGenericDbConnection.prepare(`
+    SELECT
+      COUNT(*) as count,
+      AVG(age) as average_age,
+      MIN(age) as min_age,
+      MAX(age) as max_age
+    FROM users
     WHERE age > ?
   `);
 
   complexSuite
-    .add('Native better-sqlite3 - Complex Query', {
+    .add('Native better-sqlite3 (DELETE) - Complex Query', {
       minSamples: 5,
       fn: function() {
         nativeComplex.get(30);
       }
     })
-    .add('Knex.js - Complex Query', {
+    .add('Native better-sqlite3 (WAL) - Complex Query', {
+      minSamples: 5,
+      fn: function() {
+        nativeWalComplex.get(30);
+      }
+    })
+    .add('Knex.js (WAL) - Complex Query', {
       minSamples: 5,
       defer: true,
       fn: function(deferred) {
@@ -616,24 +867,21 @@ function setupComplexBenchmarks() {
           )
           .then(() => deferred.resolve())
           .catch(err => {
-            console.error('Benchmark error:', err);
+            console.error('Knex complex query error:', err);
             deferred.resolve();
           });
       }
     })
-    .add('libSQL (Turso embedded) - Complex Query', {
+    .add('Kysely (WAL) - Complex Query', {
       minSamples: 5,
-      defer: true,
-      fn: function(deferred) {
-        libsqlDb.execute({
-          sql: 'SELECT COUNT(*) as count, AVG(age) as average_age, MIN(age) as min_age, MAX(age) as max_age FROM users WHERE age > ?',
-          args: [30]
-        })
-          .then(() => deferred.resolve())
-          .catch(err => {
-            console.error('Benchmark error:', err);
-            deferred.resolve();
-          });
+      fn: function() {
+        kyselyComplex.get(30);
+      }
+    })
+    .add('Kysely Generic (WAL) - Complex Query', {
+      minSamples: 5,
+      fn: function() {
+        kyselyGenericComplex.get(30);
       }
     });
 }
@@ -641,31 +889,50 @@ function setupComplexBenchmarks() {
 // Seed the databases with initial data
 async function seedDatabases() {
   console.log(`Seeding databases with ${NUM_RECORDS} records...`);
-  
-  // Native better-sqlite3 seeding
+
+  // Native (DELETE)
   const nativeInsert = nativeDb.prepare('INSERT INTO users (name, email, age) VALUES (?, ?, ?)');
   const nativeTransaction = nativeDb.transaction((users) => {
     for (const user of users) {
       nativeInsert.run(user.name, user.email, user.age);
     }
   });
-  
+
+  // Native (WAL)
+  const nativeWalInsert = nativeWalDb.prepare('INSERT INTO users (name, email, age) VALUES (?, ?, ?)');
+  const nativeWalTransaction = nativeWalDb.transaction((users) => {
+    for (const user of users) {
+      nativeWalInsert.run(user.name, user.email, user.age);
+    }
+  });
+
   const users = Array.from({ length: NUM_RECORDS }, (_, i) => generateUser(i));
   nativeTransaction(users);
-  
-  // Knex.js seeding - insert in smaller batches to avoid SQLite errors
+  nativeWalTransaction(users);
+
   const BATCH_SIZE = 100;
   for (let i = 0; i < users.length; i += BATCH_SIZE) {
     const batch = users.slice(i, i + BATCH_SIZE);
     await knexDb('users').insert(batch);
   }
-  for (let i = 0; i < users.length; i += BATCH_SIZE) {
-    const batch = users.slice(i, i + BATCH_SIZE);
-    const statements = batch.map(u => ({ sql: 'INSERT INTO users (name, email, age) VALUES (?, ?, ?)', args: [u.name, u.email, u.age] }));
-    await libsqlDb.batch(statements, 'write');
-  }
-  
-  return Promise.resolve();
+
+  // Kysely - use raw SQLite for batch inserts
+  const ki = kyselyDbConnection.prepare('INSERT INTO users (name, email, age) VALUES (?, ?, ?)');
+  const kt = kyselyDbConnection.transaction((arr) => {
+    for (const user of arr) {
+      ki.run(user.name, user.email, user.age);
+    }
+  });
+  kt(users);
+
+  // Kysely Generic
+  const kgi = kyselyGenericDbConnection.prepare('INSERT INTO users (name, email, age) VALUES (?, ?, ?)');
+  const kgt = kyselyGenericDbConnection.transaction((arr) => {
+    for (const user of arr) {
+      kgi.run(user.name, user.email, user.age);
+    }
+  });
+  kgt(users);
 }
 
 // Display benchmark results
@@ -679,80 +946,91 @@ function displayResults(suite) {
 // Run all benchmarks
 async function runBenchmarks() {
   try {
-    console.log('Setting up databases...');
+    console.log('Setting up databases (all WAL mode)...');
     await setupDatabases();
+
+    // Verify journal modes
+    console.log('\n=== Journal Mode Verification ===');
+    console.log(`Native (DELETE): ${nativeDb.pragma('journal_mode', { simple: true })}`);
+    console.log(`Native WAL: ${nativeWalDb.pragma('journal_mode', { simple: true })}`);
     
+    const knexJournalMode = knexDb.raw('PRAGMA journal_mode').toSQL().toNative();
+    const knexCheckDb = new Sqlite(KNEX_WAL_DB_PATH);
+    console.log(`Knex WAL: ${knexCheckDb.pragma('journal_mode', { simple: true })}`);
+    knexCheckDb.close();
+    
+    console.log(`Kysely WAL: ${kyselyDbConnection.pragma('journal_mode', { simple: true })}`);
+    console.log(`Kysely Generic WAL: ${kyselyGenericDbConnection.pragma('journal_mode', { simple: true })}`);
+    console.log('==============================\n');
+
     console.log('Seeding databases...');
     await seedDatabases();
-    
+
     console.log('Setting up benchmarks...');
     setupInsertBenchmarks();
     setupSelectBenchmarks();
     setupUpdateBenchmarks();
     setupDeleteBenchmarks();
     setupComplexBenchmarks();
-    
+
     console.log('\nRunning benchmarks...');
-    console.log('This may take a while...');
-    
-    // Run each suite
+    console.log('This may take a while...\n');
+
     insertSuite
       .on('complete', function() {
         displayResults(this);
         selectSuite.run({ async: true });
       })
       .run({ async: true });
-    
+
     selectSuite
       .on('complete', function() {
         displayResults(this);
         updateSuite.run({ async: true });
       });
-    
+
     updateSuite
       .on('complete', function() {
         displayResults(this);
         deleteSuite.run({ async: true });
       });
-    
+
     deleteSuite
       .on('complete', function() {
         displayResults(this);
         complexSuite.run({ async: true });
       });
-    
+
     complexSuite
-      .on('complete', function() {
+      .on('complete', async function() {
         displayResults(this);
+
+        console.log('\n=== Running Concurrent Stress Tests ===');
         
         console.log('\nRunning concurrent write test...');
-        runConcurrentWriteTest()
-          .then(() => {
-            console.log('\nRunning concurrent update test...');
-            return runConcurrentUpdateTest();
-          })
-          .then(() => {
-            console.log('\nBenchmark complete!');
-            nativeDb.close();
-            knexDb.destroy();
-            nativeWalDb.close();
-            knexWalDb.destroy();
-          })
-          .catch(err => {
-            console.error('Concurrent write test error:', err);
-            nativeDb.close();
-            knexDb.destroy();
-            nativeWalDb.close();
-            knexWalDb.destroy();
-          });
+        await runConcurrentWriteTest();
+        
+        console.log('\nRunning concurrent update test...');
+        await runConcurrentUpdateTest();
+
+        console.log('\n=== Benchmark Complete! ===');
+
+        // Cleanup
+        nativeDb.close();
+        nativeWalDb.close();
+        await knexDb.destroy();
+        kyselyDbConnection.close();
+        kyselyGenericDbConnection.close();
       });
-    
+
   } catch (error) {
     console.error('Error running benchmarks:', error);
-    
-    // Clean up
+
     nativeDb.close();
-    knexDb.destroy();
+    nativeWalDb.close();
+    await knexDb.destroy();
+    kyselyDbConnection.close();
+    kyselyGenericDbConnection.close();
   }
 }
 
